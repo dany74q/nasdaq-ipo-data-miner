@@ -1,3 +1,4 @@
+from pandas_datareader import data as web
 from argparse import ArgumentParser
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -37,26 +38,25 @@ class Miner(object):
 	def mine_to(self, file_name, months_to_mine):
 		self.logger.info('mining to - {}'.format(file_name))
 
-		total_mined = 0
+		entries = []
 		today = datetime.now()
 		month, year = today.month, today.year
 		for i in xrange(months_to_mine):
 			url = self.NASDAQ_IPO_PRICING_URL.format(year=year, month=month)
 			self.logger.info('mining month - {} year - {} url - {}'.format(month, year, url))
-			entries = self._mine_from_url(url)
+			monthly_entries = self._mine_from_url(url)
+			entries.extend(monthly_entries)
 			
-			self.logger.info('successfully mined {} entries for month {}'.format(len(entries), month))
-			total_mined += len(entries)
+			self.logger.info('successfully mined {} entries for month {}'.format(len(monthly_entries), month))
 			month = 12 if month <= 1 else month - 1
 			year = year - 1 if month == 12 else year
 			self.HEADERS['Referer'] = url
 			self.HEADERS['Cookie'] = self.COOKIE_TEMPLATE.format(referer=url)
 			time.sleep(1)
+			with open(file_name, 'w') as f:
+				f.write(json.dumps(entries))
 
-		self.logger.info('done - mined a total of {} entries to {}'.format(total_mined, file_name))
-		self.logger.info('writing mined entries to file - {}'.format(file_name))
-		with open(file_name, 'w') as f:
-			f.write(json.dumps(entries))
+		self.logger.info('done - mined a total of {} entries to {}'.format(len(entries), file_name))
 
 	def _mine_from_url(self, url):
 		html = BeautifulSoup(requests.get(url, headers=self.HEADERS).text, "html5lib")
@@ -85,10 +85,22 @@ class Miner(object):
 			date = columns[6].text
 			self.logger.info('Mining entry #{} for company - {}'.format(i, company))
 			try:
-				data = self._mine_company_url(company_url)
+				ipo_data = self._mine_company_url(company_url)
 			except Exception as e:
 				self.logger.exception('failed fetching company data for - #{} - {}'.format(i, company))
-				data = {}
+				ipo_data = {}
+
+			try:
+				trade_data = web.get_data_google(symbol, date)
+				price_num = max(trade_data.ix[0].Open, float(re.sub('[^\d\.]+', '', price)))
+				close_num = trade_data.ix[0].Close
+				first_day_change = float((close_num - price_num) / price_num * 100) if trade_data is not None else None
+				first_day_positive = first_day_change > 0
+				trade_data = json.loads(trade_data.to_json())
+			except Exception as e:
+				self.logger.exception('failed fetching finance data for - #{} - {}'.format(i, company))
+				trade_data = {}
+
 			entries.append({
 				'company': company,
 				'company_url': company_url,
@@ -98,7 +110,10 @@ class Miner(object):
 				'shares': shares,
 				'amount': amount,
 				'date': date,
-				'data': data	
+				'ipo_data': ipo_data,
+				'trade_data': trade_data,
+				'first_day_change': first_day_change,
+				'first_day_positive': first_day_positive
 			})
 
 		return entries
