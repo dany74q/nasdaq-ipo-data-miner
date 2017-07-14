@@ -1,8 +1,9 @@
 from pandas_datareader import data as web
+from datetime import datetime, timedelta
 from argparse import ArgumentParser
 from bs4 import BeautifulSoup
-from datetime import datetime
 import requests
+import dateutil
 import logging
 import json
 import time
@@ -91,7 +92,8 @@ class Miner(object):
 				ipo_data = {}
 
 			try:
-				trade_data = web.get_data_google(symbol, date)
+				end_date = dateutil.parser.parse(date) + timedelta(days=1)
+				trade_data = web.get_data_google(symbol, date, end_date.strftime('%m/%d/%Y'))
 				price_num = max(trade_data.ix[0].Open, float(re.sub('[^\d\.]+', '', price)))
 				close_num = trade_data.ix[0].Close
 				first_day_change = float((close_num - price_num) / price_num * 100) if trade_data is not None else None
@@ -100,6 +102,8 @@ class Miner(object):
 			except Exception as e:
 				self.logger.exception('failed fetching finance data for - #{} - {}'.format(i, company))
 				trade_data = {}
+				first_day_change = None
+				first_day_positive = None
 
 			entries.append({
 				'company': company,
