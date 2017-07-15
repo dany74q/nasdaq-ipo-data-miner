@@ -1,3 +1,4 @@
+from dateutil.relativedelta import relativedelta
 from pandas_datareader import data as web
 from datetime import datetime, timedelta
 from argparse import ArgumentParser
@@ -36,12 +37,19 @@ class Miner(object):
 		self.logger.addHandler(ch)
 		self.logger.info('miner initialized')
 
-	def mine_to(self, file_name, months_to_mine):
+	def mine_to(self, file_name, from_date, to_date):
 		self.logger.info('mining to - {}'.format(file_name))
 
-		entries = []
-		today = datetime.now()
-		month, year = today.month, today.year
+		try:
+			entries = json.load(open(file_name))
+		except:
+			entries = []
+
+		month, year = to_date.month, to_date.year
+		months_to_mine = (year - from_date.year) * 12 + (month - from_date.month) + 1
+		if months_to_mine < 0 or from_date > to_date:
+			return self.logger.warn('from date seems bigger than to date - cancelling operation')
+
 		for i in xrange(months_to_mine):
 			url = self.NASDAQ_IPO_PRICING_URL.format(year=year, month=month)
 			self.logger.info('mining month - {} year - {} url - {}'.format(month, year, url))
@@ -84,6 +92,7 @@ class Miner(object):
 			shares = columns[4].text
 			amount = columns[5].text
 			date = columns[6].text
+			price_num = float(re.sub('[^\d\.]+', '', price))
 			self.logger.info('Mining entry #{} for company - {}'.format(i, company))
 			try:
 				ipo_data = self._mine_company_url(company_url)
@@ -94,16 +103,20 @@ class Miner(object):
 			try:
 				end_date = dateutil.parser.parse(date) + timedelta(days=1)
 				trade_data = web.get_data_google(symbol, date, end_date.strftime('%m/%d/%Y'))
-				price_num = max(trade_data.ix[0].Open, float(re.sub('[^\d\.]+', '', price)))
-				close_num = trade_data.ix[0].Close
-				first_day_change = float((close_num - price_num) / price_num * 100) if trade_data is not None else None
-				first_day_positive = first_day_change > 0
+				first_day_open = trade_data.ix[0].Open
+				first_day_close = trade_data.ix[0].Close
+				first_day_change = float((first_day_close - first_day_open) / first_day_open * 100) if trade_data is not None else None
+				first_day_ipo_change = float((first_day_close - price_num) / price_num * 100) if trade_data is not None else None
+				first_day_positive = first_day_change > 0 if first_day_change is not None else None
 				trade_data = json.loads(trade_data.to_json())
 			except Exception as e:
 				self.logger.exception('failed fetching finance data for - #{} - {}'.format(i, company))
 				trade_data = {}
 				first_day_change = None
 				first_day_positive = None
+				first_day_open = None
+				first_day_close = None
+				first_day_ipo_change = None
 
 			entries.append({
 				'company': company,
@@ -116,8 +129,12 @@ class Miner(object):
 				'date': date,
 				'ipo_data': ipo_data,
 				'trade_data': trade_data,
-				'first_day_change': first_day_change,
-				'first_day_positive': first_day_positive
+				'first_day_market_change': first_day_change,
+				'first_day_market_positive': first_day_positive,
+				'first_day_open': first_day_open,
+				'first_day_close': first_day_close,
+				'price_num': price_num,
+				'first_day_ipo_change': first_day_ipo_change
 			})
 
 		return entries
@@ -295,8 +312,12 @@ class Miner(object):
 
 if '__main__' == __name__:
 	parser = ArgumentParser()
+	date_type = lambda d: datetime.strptime(d, '%m/%d/%Y')
 	parser.add_argument('-o', dest='filename', help='output file', default='output.json')
-	parser.add_argument('-n', dest='number', help='number of months to mine', type=int, default=100)
+	today = datetime.now()
+	six_months_ago = today - relativedelta(months=6)
+	parser.add_argument('-f', dest='from_date', help='from date (mm/dd/yyyy)', type=date_type, default=six_months_ago)
+	parser.add_argument('-t', dest='to_date', help='to date (mm/dd/yyyy)', type=date_type, default=today)
 	args = parser.parse_args()
 	miner = Miner()
-	miner.mine_to(args.filename, args.number)
+	miner.mine_to(args.filename, args.from_date, args.to_date)
